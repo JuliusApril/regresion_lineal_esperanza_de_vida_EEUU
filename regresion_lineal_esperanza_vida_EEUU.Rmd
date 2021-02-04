@@ -1,0 +1,554 @@
+---
+title: "Práctica 2. **Regresiones múltiples.**"
+subtitle: "Datahack. Master Datascience. Módulo 1: Análisis descriptivo." 
+author: "Julio Abril Cuesta"
+date: "15/10/2020"
+output: 
+  html_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## 1. Introducción.
+
+Vamos a analizar el dataset state.x77 que contiene información relativa a la esperanza de vida en cada uno de los estados de EEUU en función de variables demográficas y sociológicas. 
+
+A continuación se puede ver una descripción de las estadísticas recogidas en state.x77. 
+
+Nombre de la variable | Descripción
+--------|------------------------
+Population            | *Población estimada en julio, 1975*
+Income                | *Ingresos per capita (1974)*
+Illiteracy            | *Porcentaje de analfabetos (1970)*
+Life Exp              | *Esperanza de vida en años (1969–71)*
+Murder                | *Tasa de asesinatos por cada 100.00 habitantes (1976)*
+HS Grad               | *Porcentaje de graduados high-school (1970)*
+Frost                 | *Numero medio de días con temperaturas inferiores a cero en la capital o la ciudad más grande (1931–1960)*
+Area                  | *Area en millas cuadradas*
+
+
+
+El objetivo es encontrar un modelo de regresión lineal múltiple que relacione la esperanza de vida con el resto de variables. Una vez definido el modelo evaluaremos la regresión en términos de normalidad de los residuos, homogeneidad de las varianzas de los residuos (homocedasticidad) y de presencia de outliers.
+
+Las librerías que vamos a utilizar para este análisis son las siguientes:
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+
+library(dplyr)
+library(ggplot2)
+library(corrplot)
+library(ggcorrplot)
+library(e1071)
+library(GGally)
+library(tidyverse)
+library(ggpubr)
+library(base)
+library(car)
+library(MASS)
+library(leaps)
+library(hier.part)
+library(gvlma)
+library(lmtest)
+library(summarytools)
+library(knitr)
+library(kableExtra)
+library(ggfortify)
+#library(readxl)
+
+
+```
+
+\ 
+
+***
+
+## 2. Análisis exploratorio de datos.
+
+### 2.1. Preparación de los datos.
+
+State.x77 forma parte del dataset "state" integrado en R. Podemos encontrar la tabla en R en formato "matrix", por lo que nuestro primer paso será transformarla en un objeto tipo "data.frame".
+
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+
+tabla<- as.data.frame(state.x77)
+str(tabla)
+
+```
+\ 
+
+Dentro del dataset “state”, encontramos la tabla state.region, que recoge las regiones a las que pertenece cada estado de EEUU ordenadas por orden alfabético de estado. Hay que tener en cuenta que antes de 1984 la región “Midwest” era designada como “North central”, por lo que será necesario actualizar la denominación de esta región.
+
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+#2.Actualizo la denominación del estado northeast por midwest.
+levels(state.region)<-c("Midwest", "South","North Central" ,"West") 
+#3. Transformo 
+region<-as.data.frame(state.region)
+# Renombro las columnas del dataframe region
+names(region)<-c('region')  
+#4. Añado la columna
+tabla<-cbind(tabla,region)
+
+
+
+attach(tabla)
+```
+
+```{r, echo=F, message=FALSE, warning=FALSE}
+
+str(tabla)
+```
+\ 
+
+### 2.2. Análisis de las variables y su relación.
+
+Una vez tenemos la tabla preparada para el análisis, podemos ver un resumen de los valores estadísticos de las variables numéricas.
+\ 
+
+
+```{r, echo=F, message=FALSE, warning=FALSE}
+
+
+(kable(round(descr(tabla[1:8],stats=c('mean','sd','min','Q1','med','Q3','max','CV','skewness','kurtosis'), style='grid'),1))) %>%  
+  kable_paper() %>% 
+  kable_styling(bootstrap_options = c("striped", "hover"),full_width = T) %>% 
+  column_spec(1, bold = T, border_right = T) 
+
+
+```
+\ 
+
+Para evaluar como se comportan las diferentes variables vamos a utilizar la matriz de correlación de la tabla.
+
+Para facilitar la lectura e interpretación de los datos vamos a usar una gráfico donde se puedan ver las relacciones entre variables, ordenadas por grado de correlación con Life exp.
+
+
+```{r echo=F, message=FALSE, warning=FALSE}
+tabla<-tabla[,c(4,3,5,6,7,2,8,1,9)]
+ggpairs(tabla[,c(1:8)],aes(alpha=0.3), upper = list(continuous = wrap("cor", size=3,alignPercent = 0.5)))
+
+
+```
+
+
+* **Relaccion entre la esperanza de vida y las otras variables.**
+
+Se puede observar que la variable *Life Exp* presenta una tendencia lineal considerable con las variables *Iliteracy*, *Murder* y *HS Grade*. 
+
+
+*Life exp* tiene una correlación con *frost* e *income* algo menor, pero se puede observar que hay cierta tendencia a crecer una variable cuando lo hace la otra.
+
+Por último, variables como *area* y *population* no parecen presentar ninguna relacion.
+
+\ 
+
+
+* **Relaciones entre otras variables.**
+
+Analizando la matriz de correlación se puede apreciar que hay un grupo de variables que parecen que están muy relacionadas entre sí. Hay que destacar que Illiteracy está muy ligada a Murder, HS Grad, Income y Frost. 
+
+
+```{r, echo=F, message=FALSE, warning=FALSE}
+
+ggpairs(tabla[,c(2,3,5,6,7)],aes(alpha=0.3), upper=list(continuous = wrap("cor", size=3,alignPercent = 0.5)))
+
+
+```
+
+Esto se podría traducir en que algunas de estás variables se pudiesen expresar en funcion de otras con las que están relacionadas y no fuesen significantes para nuestro modelo.
+\ 
+
+
+* **Tendencias**.
+
+
+```{r, echo=F, message=FALSE, warning=FALSE}
+
+LE<-ggplot(tabla,aes(y=`Life Exp`))+
+  geom_boxplot(aes(fill=region),show.legend = F)
+IL<-ggplot(tabla,aes(y=Illiteracy))+
+  geom_boxplot(aes(fill=region),show.legend = F)
+MU<-ggplot(tabla,aes(y=Murder))+
+  geom_boxplot(aes(fill=region),show.legend = F)
+HS<-ggplot(tabla,aes(y=`HS Grad`))+
+  geom_boxplot(aes(fill=region),show.legend = F)
+FR<-ggplot(tabla,aes(y=Frost))+
+  geom_boxplot(aes(fill=region),show.legend = F)
+IN<-ggplot(tabla,aes(y=Income))+
+  geom_boxplot(aes(fill=region),show.legend = F)
+PO<-ggplot(tabla,aes(y=Population))+
+  geom_boxplot(aes(fill=region),show.legend = F)
+AR<-ggplot(tabla,aes(y=Area))+
+  geom_boxplot(aes(fill=region),show.legend = F)
+AR1<-ggplot(tabla,aes(y=Area))+
+  geom_boxplot(aes(fill=region))
+leg <- get_legend(AR1)
+leyenda<-as_ggplot(leg)
+
+ggarrange(LE,IL,MU,HS,FR,IN,PO,AR,leyenda,ncol=3,nrow = 3)
+
+
+```
+
+\ 
+
+La esperanza de vida en los EEUU se encuentra entre los 67,96 años y los 73,60, siendo la esperanza media 70.88 años. La distribución de estos valores es normal. 
+
+Según la procedencia geográfica, se observa la tendencia de que en aquellos lugares donde hay menor porcentaje de población analfabeta, menores tasas de asesinato y mayores tasas de graduados la esperanza de vida es mayor.  
+
+Lugares donde el nivel de ingresos es menor, como la región Sur de EEUU tienden a tener menor esperanza de vida.
+
+Lugares con climas más frios (con mayor número de heladas anuales) presentan mayores esperanzas de vida.
+\ 
+
+***
+
+## 3. Regresión lineal múltiple.
+
+Vamos a construir un modelo de regresión lineal múltiple que relacione la esperanza de vida con el resto de las 8 variables y en función de la significancia que tenga cada variable en el modelo descartaremos la variable.
+\ 
+
+* **Modelo 1.**
+
+
+```{r, echo=T, message=FALSE, warning=FALSE}
+
+modelo1<-lm(`Life Exp`~Murder+Illiteracy+`HS Grad`+Income+Frost+Area+Population,data=tabla)
+summary(modelo1)
+
+```
+\ 
+
+$Modelo~1:~~~~R^2_{ajust}=0,6922$
+
+La bondad del ajuste está muy al límite. Se observa una fuerte dependencia de la esperanza de vida, con la tasa de criminalidad, cosa que parecía obvia, y la tasa de graduados en enseñanza superior (HS Grad). 
+
+Variables como porcentaje de población analfabeta que está fuertemente relacionada con la tasa de asesinato y el porcentaje de días con heladas o el nivel de ingresos relacionado con la tasa de graduados no tienen significancia en el modelo, como habíamos comentado en el apartado anterior.
+
+La población y el número de días con nivel medio de días con Tª inferior (frost) podrían tener alguna significancia en el modelo. 
+
+En el siguiente paso vamos aeliminar la variable **income** que tiene el mayor valor de p.
+\ 
+
+* **Paso 1. Modelo 2**
+
+
+```{r, echo=F, message=FALSE, warning=FALSE}
+
+modelo2<-lm(`Life Exp`~Murder+Illiteracy+`HS Grad`+Frost+Area+Population,data=tabla)
+summary(modelo2)
+
+```
+$Modelo~2:~~~~R^2_{ajust}=0,6993$
+
+La siguiente variable en eliminar será **Area**.
+
+* **Paso 2. Modelo 3**
+
+
+```{r, echo=F, message=FALSE, warning=FALSE}
+
+modelo3<-lm(`Life Exp`~Murder+Illiteracy+`HS Grad`+Frost+Population,data=tabla)
+summary(modelo3)
+
+```
+
+\ 
+
+$Modelo~3:~~~~R^2_{ajust}=0,7061$
+\ 
+
+La siguiente variable en eliminar será **Illiteracy**.
+\ 
+
+* **Paso 3. Modelo 4**
+
+
+```{r, echo=F, message=FALSE, warning=FALSE}
+
+modelo4<-lm(`Life Exp`~Murder+`HS Grad`+Frost+Population,data=tabla)
+summary(modelo4)
+
+```
+
+\  
+
+$Modelo~4:~~~~R^2_{ajust}=0,7125$ 
+\ 
+
+La variable **Population** tiene un p-value muy próximo a 0,05. Vamos a probar a eliminarla a ver que sucede.
+\ 
+
+* **Paso 4. Modelo 5**
+
+
+```{r, echo=F, message=FALSE, warning=FALSE}
+
+modelo5<-lm(`Life Exp`~Murder+`HS Grad`+Frost,data=tabla)
+summary(modelo5)
+
+```
+
+\ 
+
+$Modelo~5:~~~~R^2_{ajust}=0,6939$
+
+Al eliminar la variable **Population** parece que perdemos bondad en el ajuste.
+
+Por lo tanto no seguiremos eliminando variables.
+
+\ 
+
+### 3.1. Resumen comparativo.
+
+Se adjunta la siguiente tabla resumen:
+\ 
+
+```{r, echo=F, message=FALSE, warning=FALSE}
+
+modelos<-c('Modelo 1','Modelo 2','Modelo 3','Modelo 4','Modelo 5')
+R2aj<-c(0.6992,0.6993,0.7061,0.7125,0.6939)
+tabla2<-matrix(c(modelos,R2aj),ncol = 2,byrow=F)
+colnames(tabla2)<-c('Modelos','$R^2_{aj}$')
+
+kable(tabla2) %>% kable_paper() %>% 
+  kable_styling(bootstrap_options = c("striped", "hover"),full_width = T) %>% 
+  row_spec(4, bold = T, background = 'lightgrey') 
+
+ 
+
+```
+
+\ 
+
+***
+
+## 4. Evaluación del modelo.
+
+El modelo de regresión linear que daba mejores valores de $R^2$ era la siguiente ecuación:
+\ 
+
+ $$Life~Exp=71,03-0,301·(Murder)+0,047·(HS~Grad)-5,9·10^{-3}·(Frost)+5·10^{-5}·(Population)$$
+\  
+
+Un modelo de regresión lineal toma las siguientes asunciones:
+
+1.- Linealidad de los datos. La relación entre las variables es linear.
+
+2.- Normalidad de los residuales. Se asume que los errores residuales se comportan siguiendo una distribución normal.
+
+3.- Homogeneidad en la varianza de los residuales (homocedasticidad). Se asume que los residuales tienen una varianza constante 
+
+\ 
+
+### 4.1. Linealidad de los datos.
+
+La linealidad de los datos se puede evaluar con la ayuda del gráfico *residuales vs ajustados*.
+
+Para nuestro modelo:
+
+
+
+```{r, echo=F, message=FALSE, warning=FALSE}
+
+plot(modelo4,1)
+```
+
+\ 
+
+La relación de los residuales con los valores ajustados por nuestra recta no sigue ningún patrón. Como podemos ver la tendencia de nuestra linea se aproxima bastante a una recta horizonal que pasase por el cero, lo que quiere decir que hay bastante linearidad.
+
+En el gráfico se identifican los registros de Hawaii, Maine y South Carolina como valores influyentes que se escapan de la tendencia.
+
+\ 
+
+### 4.2. Normalidad de los residuos.
+
+La normalidad de los residuos se puede evaluar de diversas maneras. En el gráfico *QQ*, una distribución normal de los residuos debe seguir una línea recta. 
+
+
+
+```{r, echo=F, message=FALSE, warning=FALSE}
+
+plot(modelo4,2)
+
+```
+
+\ 
+
+La distribución normal también se puede evaluar aplicando un test de Shapiro-Wilkins.
+
+
+
+```{r, echo=F, message=FALSE, warning=FALSE}
+
+shapiro.test(modelo4$residuals)
+
+```
+\ 
+
+Como p-value>0,05 podemos asumir que la distribución es normal.
+
+O bien, mediante la regla no escrita que indica que cuando coeficiente de asimetría y Curtosis están entre -2 y 2 se puede asumir que la distribución tiene cierta normalidad. 
+
+Para la distribución de residuales de nuestro modelo, el coeficiente de asimetría es igual a `r skewness(modelo4$residuals)` y el la curtosis es igual a `r kurtosis(modelo4$residuals)`, por lo que podemos asumir normalidad en nuestra distribución.
+
+\ 
+
+### 4.3. Homocedastacidad.
+
+La homogeneidad de las varianzas se puede evaluar con el gráfico con el gráfico *scale - location*.
+
+Este gráfico muestra si los residuales se distribuyen homogeneamente a lo largo del rango. Lo ideal sería que la línea de tendencia fuese horizontal.
+
+
+```{r, echo=F, message=FALSE, warning=FALSE}
+
+plot(modelo4,3)
+
+```
+
+\  
+
+Otra forma de evaluar la homocedastacidad del modelo es aplicando un test de Breush-Pagan
+
+```{r, echo=F, message=FALSE, warning=FALSE}
+
+bptest(modelo4)
+
+```
+\ 
+
+En nuestro caso, como p-value>0,05 no se rechaza la hipótesis nula de homocedasticidad. podemos asumir que el modelo es HOMOCEDÁSTICO.
+
+\ 
+
+### 4.4. Outliers y valores influyentes.
+
+Un valor influyente puede alterar con su exclusión el resultado de la regresión. Los valores influyentes están asociados con un residual grande.
+
+No todos los outliers o valores extremos tienen por que ser influyentes en el modelo.is.
+
+La métrica distancia de Cook nos ayuda a determinar la influencia de un valor en el modelo. Habitualmente para valores superiores superiores a $\frac{4}{(n-p-1)}$ (siendo n el número de observaciones y p el número de variables predictoras en el modelo) podemos decir que la obserción es influyente.
+
+
+El gráfico *residuales vs leverage* nos puede ayudar a identificar outliers y valores influyentes.
+
+
+```{r, echo=F, message=FALSE, warning=FALSE}
+
+par(mfrow=c(1,2))
+plot(modelo4,4:5)
+
+outlierTest(modelo4,data=tabla)
+
+```
+
+\ 
+
+### 4.5. Ajuste del modelo eliminando outliers.
+
+A lo largo del análisis hemos visto como *Hawaii* y *Maine* se comportaban como un outliers, y probablemente tienen influencia en el resultado modelo. 
+
+Vamos a recalcular el modelo retirando estos valores a ver que ocurre. 
+
+
+```{r, echo=F, message=FALSE, warning=FALSE}
+
+
+tabla$estado<-row.names(tabla)
+tabla %>% filter(estado!='Hawaii'&estado!='Maine')->tabla2
+
+modelo41=lm(`Life Exp`~Murder+`HS Grad`+Frost+Population,data=tabla2)
+summary(modelo41)
+
+```
+
+\ 
+
+Hemos mejorado en tres puntos la bondad del ajuste, teniendo un nuevo modelo con $R^2_{aj}=0,756$.
+
+Y además la variable *Frost* deja de tener significancia, así que vamos a proponer un último modelo eliminando esta variable:
+
+
+```{r, echo=F, message=FALSE, warning=FALSE}
+
+
+modelo411=lm(`Life Exp`~Murder+`HS Grad`+Population,data=tabla2)
+summary(modelo411)
+
+
+
+```
+
+\ 
+
+### 4.6. Modelo de regresión lineal.
+
+Hemos visto que unavez eliminados dos outliers hemos mejorado el ajuste lineal de los datos, quedando el **Modelo 411** como el modelo que mejor devuelve los ajustes.
+
+\ 
+
+ $$Life~Exp=71,05-0,287·(Murder)+0,031·(HS~Grad)+6,9·10^{-5}·(Population)$$
+
+\ 
+ 
+Con un $R^2_{aj}=0,755$
+
+\ 
+
+Veamos a continuación como se comporta el modelo:
+
+
+```{r, echo=F, message=FALSE, warning=FALSE}
+
+par(mfrow=c(2,2))
+plot(modelo411)
+
+```
+
+\ 
+
+* **Linealidad de los datos: OK**
+
+* **Normalidad de los residuos: OK**
+
+```{r, echo=F, message=FALSE, warning=FALSE}
+#Normalidad de los residuos
+shapiro.test(modelo411$residuals)
+
+```
+
+P-value > 0,05
+
+* **Homocedasticidad: HOMOCEDÁSTICO**
+
+```{r, echo=F, message=FALSE, warning=FALSE}
+
+bptest(modelo411)
+```
+
+P-value > 0,05
+
+* **Outliers:**
+
+```{r, echo=F, message=FALSE, warning=FALSE}
+
+outlierTest(modelo411)
+
+```
+
+Se observa Pensilvania como valor influyente.
+
+\ 
+
+\  
+
+\ 
+
